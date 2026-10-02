@@ -1,0 +1,113 @@
+import pickle
+import numpy as np
+import re
+
+from sklearn.metrics.pairwise import cosine_similarity
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+# ============================
+# LOAD ARTIFACTS
+# ============================
+
+RNN_PATH = "C:/Users/Delta/Documents/datasetML/chatbot/chat/dataforRNN"
+CBR_PATH = "C:/Users/Delta/Documents/datasetML/chatbot/chat/dataforCBR"
+
+# RNN files
+tokenizer = pickle.load(open(f"{RNN_PATH}/tokenizer.pickle", "rb"))
+label_enc = pickle.load(open(f"{RNN_PATH}/label_encoder.pickle", "rb"))
+rnn_model = load_model(f"{RNN_PATH}/rnn_model.h5")
+
+# CBR files
+tfidf_vectorizer = pickle.load(open(f"{CBR_PATH}/tfidf_vectorizer.pickle", "rb"))
+case_base = pickle.load(open(f"{CBR_PATH}/case_base_data.pickle", "rb"))
+
+case_vectors = case_base["vectors"]
+case_bodies = case_base["body_text"]
+case_solutions = case_base["solutions"]
+case_priorities = case_base["priority"]
+
+max_length = 200  # use the same padding length from training
+
+# ============================
+# TEXT CLEANING
+# ============================
+
+import nltk
+from nltk.corpus import stopwords
+stop = set(stopwords.words("english"))
+
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    words = [w for w in text.split() if w not in stop]
+    return " ".join(words)
+
+# ============================
+# RNN PREDICTION FUNCTION
+# ============================
+
+def rnn_predict(text):
+    clean = clean_text(text)
+    seq = tokenizer.texts_to_sequences([clean])
+    pad = pad_sequences(seq, maxlen=max_length, padding="post")
+    pred = rnn_model.predict(pad)
+    class_id = np.argmax(pred)
+    department = label_enc.inverse_transform([class_id])[0]
+    return department
+
+# ============================
+# CBR RETRIEVAL (KNN)
+# ============================
+
+def cbr_retrieve(text, k=3):
+    clean = clean_text(text)
+    q_vec = tfidf_vectorizer.transform([clean])
+
+    sims = cosine_similarity(q_vec, case_vectors).flatten()
+    top_k = sims.argsort()[-k:][::-1]
+
+    results = []
+    for idx in top_k:
+        results.append({
+            "similarity": sims[idx],
+            "text": case_bodies[idx],
+            "department": case_solutions[idx],
+            "priority": case_priorities[idx]
+        })
+    return results
+
+# ============================
+# FINAL CHATBOT FUNCTION
+# ============================
+
+def chatbot_reply(user_text):
+    dept_rnn = rnn_predict(user_text)
+    similar_cases = cbr_retrieve(user_text, k=3)
+
+    print("\n📌 RNN Predicted Department:")
+    print(f"➡ {dept_rnn}")
+
+    print("\n📚 Similar Past Tickets (CBR):")
+    for c in similar_cases:
+        print("\n--------------------------------")
+        print(f"Similarity: {c['similarity']:.2f}")
+        print(f"Department: {c['department']}")
+        print(f"Priority: {c['priority']}")
+        print(f"Example Ticket: {c['text'][:200]}...")
+
+    return dept_rnn, similar_cases
+
+
+# ============================
+# USER INPUT LOOP
+# ============================
+
+if __name__ == "_main_":
+    while True:
+        user = input("\nEnter your issue (or 'exit'): ")
+
+        if user.lower() == "exit":
+            break
+
+        chatbot_reply(user)
